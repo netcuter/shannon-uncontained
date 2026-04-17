@@ -368,7 +368,7 @@ export function getProviderConfig() {
                 return {
                     provider: 'lmstudio',
                     baseURL: customBaseURL || 'http://localhost:1234/v1',
-                    apiKey: dummyKey,
+                    apiKey: openaiKey || process.env.LLM_API_KEY || dummyKey,
                     model: modelOverride || 'local-model'
                 };
 

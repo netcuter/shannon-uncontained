@@ -168,10 +168,10 @@ async function runClaudePrompt(prompt, sourceDir, allowedTools = 'Read', context
       const isDocker = process.env.SHANNON_DOCKER === 'true';
 
       // Build args array - conditionally add --executable-path for Docker
+      // --isolated and --user-data-dir are mutually exclusive in playwright-mcp
       const mcpArgs = [
         '@playwright/mcp@latest',
         '--isolated',
-        '--user-data-dir', userDataDir,
       ];
 
       // Docker: Use system Chromium; Local: Use Playwright's bundled browsers
