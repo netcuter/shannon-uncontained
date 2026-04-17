@@ -22,20 +22,29 @@ authentication:
     value: "/dashboard"
 
 # Multi-node LLM routing (optional - for 2 machines with local LM Studio)
-# Remove this section to use single LLM_BASE_URL env var instead.
+# Remove this section and set LLM_BASE_URL env var for single-node setup.
+#
+# Model selection rationale (tested, CPU-only, 16GB RAM):
+#   node1 (i7-13th gen, stronger): qwen3-coder-30b-a3b-instruct
+#     - MoE architecture (only 3B params active) → fast despite 30B total
+#     - Best quality in tests: Prototype Pollution, SSRF, concrete exploits
+#     - Used for high-stakes agents: recon synthesis, report generation
+#   node2 (i7-10th gen): whiterabbitneo-2.5-qwen-2.5-coder-7b
+#     - Security-focused fine-tune of Qwen2.5-Coder-7B
+#     - Handles all vuln/exploit agents (parallel workload)
+#     - pre-recon uses qwen2.5-1.5b-sft-lora-websecurity-v1 (24s, tiny, web-sec specialized)
 llm_nodes:
   - id: node1
-    baseUrl: "http://192.168.1.10:1234/v1"   # machine 1 (i7-10th gen)
-    apiKey: "lm-studio"
-    model: "qwen2.5-7b-instruct-q4_k_m"
+    baseUrl: "http://MACHINE1_IP:1234/v1"   # i7-13th gen
+    apiKey: "YOUR_LMSTUDIO_KEY"
+    model: "qwen3-coder-30b-a3b-instruct"
     agents:
-      - pre-recon
       - recon
       - report
   - id: node2
-    baseUrl: "http://192.168.1.20:1234/v1"   # machine 2 (i7-13th gen)
-    apiKey: "lm-studio"
-    model: "qwen2.5-14b-instruct-q4_k_m"
+    baseUrl: "http://MACHINE2_IP:1234/v1"   # i7-10th gen
+    apiKey: "YOUR_LMSTUDIO_KEY"
+    model: "whiterabbitneo-2.5-qwen-2.5-coder-7b"
     agents:
       - injection-vuln
       - xss-vuln
@@ -47,6 +56,12 @@ llm_nodes:
       - auth-exploit
       - authz-exploit
       - ssrf-exploit
+  - id: node2-fast
+    baseUrl: "http://MACHINE2_IP:1234/v1"   # same machine, tiny model for pre-recon
+    apiKey: "YOUR_LMSTUDIO_KEY"
+    model: "qwen2.5-1.5b-sft-lora-websecurity-v1"
+    agents:
+      - pre-recon
 
 rules:
   avoid:

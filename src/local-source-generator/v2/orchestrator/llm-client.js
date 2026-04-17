@@ -99,13 +99,17 @@ export class LLMClient {
      */
     resolveNodeForAgent(agentName) {
         if (!this.nodes || !agentName) {
-            return { baseUrl: this.options.baseUrl, apiKey: this.options.apiKey };
+            return { baseUrl: this.options.baseUrl, apiKey: this.options.apiKey, model: null };
         }
         const node = this.nodes.find(n => n.agents && n.agents.includes(agentName));
         if (node) {
-            return { baseUrl: node.baseUrl, apiKey: node.apiKey || this.options.apiKey };
+            return {
+                baseUrl: node.baseUrl,
+                apiKey: node.apiKey || this.options.apiKey,
+                model: node.model || null,
+            };
         }
-        return { baseUrl: this.options.baseUrl, apiKey: this.options.apiKey };
+        return { baseUrl: this.options.baseUrl, apiKey: this.options.apiKey, model: null };
     }
 
     /**
@@ -144,7 +148,8 @@ export class LLMClient {
         } = options;
 
         const route = this.routing[capability] || { tier: 'smart' };
-        const model = options.model || this.selectModel(route);
+        const node = this.resolveNodeForAgent(agentName);
+        const model = options.model || node.model || this.selectModel(route);
 
         try {
             const response = await this.callAPI(prompt, {
