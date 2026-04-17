@@ -15,11 +15,11 @@ export class SecretScannerAgent extends BaseAgent {
 
         this.inputs_schema = {
             type: 'object',
-            required: ['sourceDir'],
+            required: [],
             properties: {
                 sourceDir: {
                     type: 'string',
-                    description: 'Directory containing files to scan'
+                    description: 'Directory containing files to scan (optional - skips scan if not provided)'
                 },
                 target: {
                     type: 'string',
@@ -221,6 +221,10 @@ export class SecretScannerAgent extends BaseAgent {
      */
     async run(ctx, inputs) {
         const { sourceDir, tool = 'auto', scanJs = true } = inputs;
+
+        if (!sourceDir) {
+            return { secrets: [], tool: 'skipped', summary: { total: 0, bySeverity: {}, byType: {}, note: 'No sourceDir provided' } };
+        }
 
         // Detect tool
         let selectedTool = tool;
