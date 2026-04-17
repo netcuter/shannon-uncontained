@@ -1,7 +1,17 @@
 /**
  * LLM Client wrapper for LSG v2
- * 
+ *
  * Provides capability-based routing and structured output enforcement.
+ * Supports multi-node routing: assign specific agents to specific LM Studio instances.
+ *
+ * Config via env vars (single node):
+ *   LLM_BASE_URL=http://192.168.1.10:1234/v1
+ *
+ * Config via LLM_NODES_JSON (multi-node):
+ *   LLM_NODES_JSON='[
+ *     {"id":"node1","baseUrl":"http://192.168.1.10:1234/v1","apiKey":"lm-studio","agents":["pre-recon","recon","report"]},
+ *     {"id":"node2","baseUrl":"http://192.168.1.20:1234/v1","apiKey":"lm-studio","agents":["injection-vuln","xss-vuln","auth-vuln","authz-vuln","ssrf-vuln","injection-exploit","xss-exploit","auth-exploit","authz-exploit","ssrf-exploit"]}
+ *   ]'
  */
 
 /**
@@ -63,6 +73,39 @@ export class LLMClient {
         };
 
         this.routing = { ...DEFAULT_ROUTING, ...options.routing };
+
+        // Multi-node routing: LLM_NODES_JSON or options.nodes
+        // Each node: { id, baseUrl, apiKey, agents: ['pre-recon', 'recon', ...] }
+        this.nodes = options.nodes || this._parseNodesFromEnv();
+    }
+
+    /**
+     * Parse multi-node config from LLM_NODES_JSON env var.
+     */
+    _parseNodesFromEnv() {
+        const raw = process.env.LLM_NODES_JSON;
+        if (!raw) return null;
+        try {
+            return JSON.parse(raw);
+        } catch {
+            console.warn('[LLM] Invalid LLM_NODES_JSON — falling back to single node');
+            return null;
+        }
+    }
+
+    /**
+     * Resolve baseUrl and apiKey for a given agent name.
+     * Falls back to default options if no node matches.
+     */
+    resolveNodeForAgent(agentName) {
+        if (!this.nodes || !agentName) {
+            return { baseUrl: this.options.baseUrl, apiKey: this.options.apiKey };
+        }
+        const node = this.nodes.find(n => n.agents && n.agents.includes(agentName));
+        if (node) {
+            return { baseUrl: node.baseUrl, apiKey: node.apiKey || this.options.apiKey };
+        }
+        return { baseUrl: this.options.baseUrl, apiKey: this.options.apiKey };
     }
 
     /**
@@ -97,6 +140,7 @@ export class LLMClient {
             schema = null,
             maxTokens = 4096,
             temperature = 0.3,
+            agentName = null,
         } = options;
 
         const route = this.routing[capability] || { tier: 'smart' };
@@ -108,6 +152,7 @@ export class LLMClient {
                 maxTokens,
                 temperature,
                 schema,
+                agentName,
             });
 
             return {
@@ -199,17 +244,65 @@ Respond ONLY with the JSON, no other text or markdown.`;
      * @param {object} options - API options
      * @returns {Promise<object>} API response
      */
+
+    /**
+     * Load model in LM Studio via /api/v1/models/load
+     * Auto-swaps model when needed (only 1 model in RAM)
+     */
+    async ensureModelLoaded(model, baseUrl, apiKey) {
+        baseUrl = baseUrl || this.options.baseUrl || '';
+        apiKey = apiKey || this.options.apiKey;
+        const isLMStudio = baseUrl.match(/172\.|localhost|127\.0\.0\.1/);
+        if (!isLMStudio) return;
+
+        const lmBase = baseUrl.replace('/v1', '');
+        const authHeader = { 'Authorization': `Bearer ${apiKey}` };
+        try {
+            const res = await fetch(`${lmBase}/api/v1/models`, { headers: authHeader });
+            const data = await res.json();
+            const loaded = (data.models || data.data || []).filter(m => m.loaded_instances && m.loaded_instances.length > 0).map(m => m.key || m.id);
+            if (loaded.includes(model)) return;
+
+            for (const m of loaded) {
+                console.log(`[LM Studio:${lmBase}] Unloading ${m}...`);
+                await fetch(`${lmBase}/api/v1/models/unload`, {
+                    method: 'POST',
+                    headers: { ...authHeader, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: m })
+                });
+            }
+
+            console.log(`[LM Studio:${lmBase}] Loading ${model}...`);
+            await fetch(`${lmBase}/api/v1/models/load`, {
+                method: 'POST',
+                headers: { ...authHeader, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model, context_length: 16384, flash_attention: true })
+            });
+
+            for (let i = 0; i < 60; i++) {
+                await new Promise(r => setTimeout(r, 2000));
+                const r2 = await fetch(`${lmBase}/api/v1/models`, { headers: authHeader });
+                const d2 = await r2.json();
+                const ready = (d2.models || d2.data || []).find(m2 => (m2.key === model || m2.id === model) && m2.loaded_instances && m2.loaded_instances.length > 0);
+                if (ready) { console.log(`[LM Studio:${lmBase}] ${model} ready!`); return; }
+            }
+            console.warn(`[LM Studio:${lmBase}] Timeout waiting for ${model}`);
+        } catch (e) {
+            console.warn(`[LM Studio:${lmBase}] ensureModelLoaded error: ${e.message}`);
+        }
+    }
+
     async callAPI(prompt, options) {
-        const { model, maxTokens, temperature } = options;
+        const { model, maxTokens, temperature, agentName } = options;
 
         // Determine provider from model name or config
         const isAnthropic = model.toLowerCase().includes('claude');
         const isOpenAI = !isAnthropic;
 
         if (isAnthropic) {
-            return this.callAnthropic(prompt, { model, maxTokens, temperature });
+            return this.callAnthropic(prompt, { model, maxTokens, temperature, agentName });
         } else {
-            return this.callOpenAI(prompt, { model, maxTokens, temperature });
+            return this.callOpenAI(prompt, { model, maxTokens, temperature, agentName });
         }
     }
 
@@ -217,13 +310,14 @@ Respond ONLY with the JSON, no other text or markdown.`;
      * Call OpenAI-compatible API (also works for OpenRouter with extra headers)
      */
     async callOpenAI(prompt, options) {
-        const baseUrl = this.options.baseUrl || 'https://api.openai.com/v1';
+        const node = this.resolveNodeForAgent(options.agentName);
+        await this.ensureModelLoaded(options.model, node.baseUrl, node.apiKey);
+        const baseUrl = node.baseUrl || 'https://api.openai.com/v1';
         const isOpenRouter = baseUrl.includes('openrouter.ai');
 
-        // Build headers - OpenRouter requires additional headers
         const headers = {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.options.apiKey}`,
+            'Authorization': `Bearer ${node.apiKey}`,
         };
 
         // OpenRouter-specific headers (required for auth)
@@ -255,13 +349,14 @@ Respond ONLY with the JSON, no other text or markdown.`;
      * Call Anthropic API
      */
     async callAnthropic(prompt, options) {
-        const baseUrl = this.options.baseUrl || 'https://api.anthropic.com/v1';
+        const node = this.resolveNodeForAgent(options.agentName);
+        const baseUrl = node.baseUrl || 'https://api.anthropic.com/v1';
 
         const response = await this.fetchWithRetry(`${baseUrl}/messages`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'x-api-key': this.options.apiKey,
+                'x-api-key': node.apiKey,
                 'anthropic-version': '2023-06-01',
             },
             body: JSON.stringify({

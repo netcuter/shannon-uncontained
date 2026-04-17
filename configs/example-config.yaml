@@ -21,6 +21,33 @@ authentication:
     type: url_contains  # Options: 'url_contains' or 'element_present'
     value: "/dashboard"
 
+# Multi-node LLM routing (optional - for 2 machines with local LM Studio)
+# Remove this section to use single LLM_BASE_URL env var instead.
+llm_nodes:
+  - id: node1
+    baseUrl: "http://192.168.1.10:1234/v1"   # machine 1 (i7-10th gen)
+    apiKey: "lm-studio"
+    model: "qwen2.5-7b-instruct-q4_k_m"
+    agents:
+      - pre-recon
+      - recon
+      - report
+  - id: node2
+    baseUrl: "http://192.168.1.20:1234/v1"   # machine 2 (i7-13th gen)
+    apiKey: "lm-studio"
+    model: "qwen2.5-14b-instruct-q4_k_m"
+    agents:
+      - injection-vuln
+      - xss-vuln
+      - auth-vuln
+      - authz-vuln
+      - ssrf-vuln
+      - injection-exploit
+      - xss-exploit
+      - auth-exploit
+      - authz-exploit
+      - ssrf-exploit
+
 rules:
   avoid:
     - description: "Do not test the marketing site subdomain"
