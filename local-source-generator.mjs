@@ -68,7 +68,7 @@ export async function generateLocalSource(webUrl, outputDir, options = {}) {
 
     // Create orchestrator with all agents
     console.log(chalk.magenta('\n🚀 Initializing LSGv2 Pipeline...'));
-    const orchestrator = createLSGv2({
+    const { orchestrator } = createLSGv2({
         mode: 'live',
         maxParallel: options.parallel || 4,
         enableCaching: true,

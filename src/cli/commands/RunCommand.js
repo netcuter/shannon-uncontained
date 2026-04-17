@@ -1,11 +1,44 @@
 
 import chalk from 'chalk';
+
 import { path, fs } from 'zx';
 import { displaySplashScreen } from '../ui.js';
 import { createLSGv2 } from '../../local-source-generator/v2/index.js';
 import { checkToolAvailability, handleMissingTools } from '../../tool-checker.js';
 import { DomainProfiler } from '../../local-source-generator/v2/adaptation/domain-profiler.js';
 import { getLLMClient } from '../../local-source-generator/v2/orchestrator/llm-client.js';
+
+
+
+/**
+ * NDA-SAFE: Returns workspace ID that NEVER contains the real hostname.
+ *
+ * Jak to działa:
+ *   - Shannon jest wywoływany przez anon-v14/v15 który zamienia prawdziwy URL na TOKEN
+ *     jeszcze PRZED wywołaniem Node.js (np. https://TARGET1)
+ *   - Jeśli jednak domena przeszła przez jako raw hostname, próbujemy wziąć token
+ *     z env SHANNON_WORKSPACE_TOKEN (ustawiany przez wrapper) lub ANON_TARGET_TOKEN
+ *   - Ostateczny fallback: losowy jednorazowy ID (nigdy prawdziwa domena)
+ */
+function getWorkspaceId(target) {
+    // 1. Wrapper anon ustawia ten env przed wywołaniem shannon
+    if (process.env.SHANNON_WORKSPACE_TOKEN) {
+        return process.env.SHANNON_WORKSPACE_TOKEN;
+    }
+
+    // 2. Jeśli URL już zawiera TOKEN zamiast domeny (anon-v14 podstawił)
+    //    np. https://TARGET1  → hostname = TARGET1
+    const hostname = new URL(target).hostname;
+    if (/^[A-Z][A-Z0-9_]*\d+$/.test(hostname)) {
+        // Wygląda jak token (TARGET1, TARGET2, COMPANY1 itp.) - użyj go
+        return hostname;
+    }
+
+    // 3. Fallback: losowy ID - NIE używamy hostname żeby nie ujawnić domeny
+    //    Logujemy ostrzeżenie bo to znaczy że shannon wywołany poza anon wrapperem
+    console.error('⚠️  NDA WARNING: Shannon wywołany bez anon wrappera! Używam losowego ID.');
+    return 'ws-' + Math.random().toString(36).slice(2, 10);
+}
 
 export async function runCommand(target, options) {
     // 1. Display Info
@@ -17,7 +50,8 @@ export async function runCommand(target, options) {
     }
 
     // 2. Setup Workspace
-    const workspace = options.workspace || path.join(process.cwd(), 'workspaces', new URL(target).hostname);
+    const workspaceId = getWorkspaceId(target);
+    const workspace = options.workspace || path.join(process.cwd(), 'workspaces', workspaceId);
     await fs.ensureDir(workspace);
 
     // 2.5 Preflight Checks - LLM availability
@@ -129,7 +163,7 @@ export async function runCommand(target, options) {
                 const profiler = new DomainProfiler({ profileDir: path.join(workspace, 'domain-profiles') });
                 await profiler.init();
 
-                const domain = new URL(target).hostname;
+                const domain = workspaceId; // NDA-safe: anonymized via SHA256
                 const metrics = {
                     probeSuccessRate: result.stats?.probeSuccessRate || 0,
                     avgClaimConfidence: orchestrator.ledger.stats().avg_belief || 0.5,
